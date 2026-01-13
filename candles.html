@@ -1,0 +1,229 @@
+<!-- Renamed to index.html for default entry -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>XAUUSD Candlestick Chart - Quantum Market Observer</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f8f8f8; }
+    .panel {
+      background: #222; color: #ffd700; padding: 18px 32px; font-size: 1.3em;
+      display: flex; align-items: center; justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    }
+    .panel-title { font-weight: bold; }
+    .panel-symbol { font-size: 1.1em; }
+    #chart { width: 100vw; height: 80vh; max-width: 900px; margin: 32px auto 0 auto; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.07); background: #fff; }
+  </style>
+</head>
+<body>
+  <div class="toolbar" style="display: flex; align-items: center; gap: 12px; background: #222; color: #ffd700; padding: 12px 24px;">
+    <div style="font-weight: bold; font-size: 1.1em; margin-right: 16px;">XAU/USD</div>
+    <button class="tf-btn" data-tf="1min">1m</button>
+    <button class="tf-btn" data-tf="5min">5m</button>
+    <button class="tf-btn" data-tf="15min">15m</button>
+    <button class="tf-btn" data-tf="1h">1h</button>
+    <button class="tf-btn" data-tf="4h">4h</button>
+    <button class="tf-btn" data-tf="1day">1D</button>
+    <span style="margin-left: 24px;">[More tools coming soon]</span>
+  </div>
+  <div id="chart"></div>
+  <div id="error-message" style="color: red; text-align: center; margin-top: 16px;"></div>
+  <script>
+    let chart, candleSeries, volumeSeries;
+    let currentInterval = '15min';
+    async function fetchCandles(interval = currentInterval) {
+      const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&apikey=cd9e7c71a1614c6dab24fbe1ba41c8fb&outputsize=100&format=JSON`;
+      try {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.values) {
+          showError("Failed to load data: " + (data.message || "Unknown error"));
+          return { candles: [], volumes: [] };
+        }
+        hideError();
+        const candles = [];
+        const volumes = [];
+        const values = data.values.reverse();
+        for (let i = 0; i < values.length; i++) {
+          const item = values[i];
+          // Use UNIX timestamp for time (Lightweight Charts prefers seconds)
+          const time = Math.floor(new Date(item.datetime.replace(' ', 'T')).getTime() / 1000);
+          candles.push({
+            time,
+            open: +item.open,
+            high: +item.high,
+            low: +item.low,
+            close: +item.close
+          });
+          volumes.push({
+            time,
+            value: +item.volume || 0,
+            color: (+item.close > +item.open) ? '#26a69a' : '#ef5350'
+          });
+        }
+        return { candles, volumes };
+      } catch (e) {
+        showError("Network/API error: " + e.message);
+        return { candles: [], volumes: [] };
+      }
+    }
+
+    function showError(msg) {
+      document.getElementById('error-message').textContent = msg;
+    }
+    function hideError() {
+      document.getElementById('error-message').textContent = '';
+    }
+
+    async function renderChart() {
+      chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: Math.min(window.innerWidth * 0.95, 900),
+        height: 600,
+        layout: {
+          background: { color: '#181a20' },
+          textColor: '#d1d4dc',
+        },
+        grid: {
+          vertLines: { color: '#363c4e', style: 1, visible: true },
+          horzLines: { color: '#363c4e', style: 1, visible: true },
+        },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          barSpacing: 12,
+          borderColor: '#2a2e39',
+          tickMarkColor: '#6a798d',
+        },
+        rightPriceScale: {
+          borderColor: '#2a2e39',
+          scaleMargins: { top: 0.05, bottom: 0.15 },
+        },
+        crosshair: {
+          mode: LightweightCharts.CrosshairMode.Magnet,
+          vertLine: {
+            color: '#ffd700',
+            width: 1,
+            style: 2,
+            labelBackgroundColor: '#ffd700',
+          },
+          horzLine: {
+            color: '#ffd700',
+            width: 1,
+            style: 2,
+            labelBackgroundColor: '#ffd700',
+          },
+        },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      });
+      candleSeries = chart.addCandlestickSeries({
+        upColor: '#00ff99',
+        downColor: '#ff3860',
+        borderUpColor: '#00ff99',
+        borderDownColor: '#ff3860',
+        wickUpColor: '#00ff99',
+        wickDownColor: '#ff3860',
+        priceLineVisible: true,
+        lastValueVisible: true,
+        barSpacing: 12,
+        borderVisible: true,
+      });
+      // Add volume histogram
+      volumeSeries = chart.addHistogramSeries({
+        color: '#3b4252',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.8, bottom: 0 },
+        lastValueVisible: true,
+        priceLineVisible: false,
+      });
+      await updateCandles();
+      setInterval(updateCandles, 60000); // Refresh every 60 seconds
+      // Add price line
+      candleSeries.createPriceLine({
+        price: 0,
+        color: '#222',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: 'Current Price',
+      });
+      // Add zoom and pan
+      chart.timeScale().fitContent();
+      // Add fullscreen button
+      addFullscreenButton();
+      // Add tooltip
+      addTooltip();
+      // Add toolbar event listeners
+      document.querySelectorAll('.tf-btn').forEach(btn => {
+        btn.onclick = async () => {
+          currentInterval = btn.getAttribute('data-tf');
+          await updateCandles(true);
+        };
+      });
+    }
+
+    async function updateCandles(forceFit = false) {
+      const { candles, volumes } = await fetchCandles();
+      if (candles.length > 0) {
+        candleSeries.setData(candles);
+        volumeSeries.setData(volumes);
+        // Update price line
+        const last = candles[candles.length - 1];
+        candleSeries.createPriceLine({
+          price: last.close,
+          color: '#222',
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          axisLabelVisible: true,
+          title: 'Current Price',
+        });
+        if (forceFit) chart.timeScale().fitContent();
+      }
+    }
+
+    // Tooltip implementation
+    function addTooltip() {
+      const container = document.getElementById('chart');
+      const tooltip = document.createElement('div');
+      tooltip.style = 'position: absolute; display: none; background: #fffbe6; border: 1px solid #ffd700; padding: 8px; border-radius: 6px; font-size: 0.95em; pointer-events: none; z-index: 10;';
+      container.appendChild(tooltip);
+      chart.subscribeCrosshairMove(param => {
+        if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
+          tooltip.style.display = 'none';
+          return;
+        }
+        if (!param.seriesPrices || typeof param.seriesPrices.get !== 'function') {
+          tooltip.style.display = 'none';
+          return;
+        }
+        const c = param.seriesPrices.get(candleSeries);
+        if (!c || typeof c.open === 'undefined' || typeof c.high === 'undefined' || typeof c.low === 'undefined' || typeof c.close === 'undefined') {
+          tooltip.style.display = 'none';
+          return;
+        }
+        tooltip.innerHTML = `<b>${param.time}</b><br>O: ${c.open} H: ${c.high} L: ${c.low} C: ${c.close}`;
+        tooltip.style.left = (param.point.x + 20) + 'px';
+        tooltip.style.top = (param.point.y + 20) + 'px';
+        tooltip.style.display = 'block';
+      });
+    }
+
+    // Fullscreen button
+    function addFullscreenButton() {
+      const btn = document.createElement('button');
+      btn.textContent = 'Fullscreen';
+      btn.style = 'position: absolute; top: 16px; right: 32px; z-index: 20; background: #ffd700; color: #222; border: none; border-radius: 6px; padding: 8px 16px; font-weight: bold; cursor: pointer;';
+      btn.onclick = () => {
+        const el = document.documentElement;
+        if (!document.fullscreenElement) el.requestFullscreen();
+        else document.exitFullscreen();
+      };
+      document.body.appendChild(btn);
+    }
+
+    renderChart();
+  </script>
+</body>
+</html>

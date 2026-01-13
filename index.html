@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>XAUUSD Candlestick Chart - Quantum Market Observer</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: linear-gradient(135deg, #181a20 60%, #23262f 100%);
+      min-height: 100vh;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #222;
+      color: #ffd700;
+      padding: 12px 24px;
+      box-shadow: 0 4px 18px 0 rgba(0,0,0,0.18);
+      border-bottom: 1.5px solid #ffd70022;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .tf-btn {
+      background: #23262f;
+      color: #ffd700;
+      border: 1.5px solid #ffd70055;
+      border-radius: 6px;
+      padding: 6px 16px;
+      font-size: 1em;
+      font-weight: 600;
+      transition: background 0.18s, color 0.18s, box-shadow 0.18s, border 0.18s;
+      box-shadow: 0 2px 8px 0 rgba(0,0,0,0.08);
+      cursor: pointer;
+    }
+    .tf-btn:hover:not(:disabled) {
+      background: #ffd700;
+      color: #181a20;
+      border: 1.5px solid #ffd700;
+      box-shadow: 0 0 12px 2px #ffd70055;
+    }
+    .tf-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #chart {
+      width: 100vw;
+      height: 80vh;
+      max-width: 900px;
+      margin: 0 auto;
+      border-radius: 14px;
+      box-shadow: 0 4px 24px 0 rgba(0,0,0,0.18);
+      background: linear-gradient(120deg, #181a20 80%, #23262f 100%);
+      position: relative;
+    }
+    #phase, #iceberg, #timePressure {
+      color: #ffd700;
+      font-weight: bold;
+      font-size: 1.1em;
+      margin: 16px 0;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div style="font-weight: bold; font-size: 1.1em; margin-right: 16px;">XAU/USD</div>
+    <button class="tf-btn" data-tf="1min">1m</button>
+    <button class="tf-btn" data-tf="5min">5m</button>
+    <button class="tf-btn" data-tf="15min">15m</button>
+    <button class="tf-btn" data-tf="1h">1h</button>
+    <button class="tf-btn" data-tf="4h">4h</button>
+    <button class="tf-btn" data-tf="1day">1D</button>
+    <span style="margin-left: 24px;">[More tools coming soon]</span>
+  </div>
+  <div id="chart"></div>
+  <div id="loading-spinner" style="display:none;text-align:center;margin-top:24px;">
+    <span style="color:#ffd700;font-size:1.2em;">Loading...</span>
+  </div>
+  <div id="error-message" style="color: red; text-align: center; margin-top: 16px;"></div>
+  <div id="phase"></div>
+  <div id="iceberg"></div>
+  <div id="action"></div>
+  <div id="timePressure"></div>
+  <div id="astroBias"></div>
+  <div id="confidence"></div>
+      // Confidence Scoring Engine (v1)
+      function calculateConfidence({
+        nearVWAP,
+        marketPhase,
+        icebergState,
+        timePressure,
+        astroBias,
+        actionState
+      }) {
+        let score = 0;
+        if (nearVWAP) score += 10;
+        if (marketPhase === "EXPANSION") score += 25;
+        if (icebergState === "ACTIVE") score += 25;
+        if (timePressure === "HIGH") score += 20;
+        if (astroBias === "PRESSURE") score += 10;
+        if (actionState === "EXECUTE") score += 10;
+        return Math.min(score, 100);
+      }
+  <script>
+    let chart, candleSeries, volumeSeries, livePriceLine;
+    let currentInterval = '15min';
+    // Use two API keys for different timeframes to reduce errors
+    // Add a dedicated key for 15min interval
+    const TWELVE_DATA_KEYS = {
+      '1min': '6b0bc20e0aa6416abd7991e0f2883c54',
+      '5min': '6b0bc20e0aa6416abd7991e0f2883c54',
+      '15min': '84636b315e21459ab51acc322b468eb8',
+      '1h': 'cd9e7c71a1614c6dab24fbe1ba41c8fb',
+      '4h': 'cd9e7c71a1614c6dab24fbe1ba41c8fb',
+      '1day': 'cd9e7c71a1614c6dab24fbe1ba41c8fb'
+    };
+    function getApiKeyForInterval(interval) {
+      return TWELVE_DATA_KEYS[interval] || TWELVE_DATA_KEYS['1min'];
+    }
+    async function fetchCandles(interval = currentInterval) {
+      const apiKey = getApiKeyForInterval(interval);
+      const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&apikey=${apiKey}&outputsize=100&format=JSON`;
+      try {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.code === 429) {
+          showError("API key for this timeframe is exhausted. Please try another timeframe or use a new key.");
+          disableTimeframe(interval, true);
+          return { candles: [], volumes: [] };
+        }
+        if (!data.values) {
+          showError("Failed to load data: " + (data.message || "Unknown error"));
+          return { candles: [], volumes: [] };
+        }
+        hideError();
+        disableTimeframe(interval, false);
+        const candles = [];
+        const volumes = [];
+        const values = data.values.reverse();
+        for (let i = 0; i < values.length; i++) {
+          const item = values[i];
+          const time = Math.floor(new Date(item.datetime.replace(' ', 'T')).getTime() / 1000);
+          candles.push({
+            time,
+            open: +item.open,
+            high: +item.high,
+            low: +item.low,
+            close: +item.close
+          });
+          volumes.push({
+            time,
+            value: +item.volume || 0,
+            color: (+item.close > +item.open) ? '#00ff99' : '#ff3860'
+          });
+        }
+        return { candles, volumes };
+      } catch (e) {
+        showError("Network/API error: " + e.message);
+        return { candles: [], volumes: [] };
+      }
+    }
+    function showError(msg) {
+      document.getElementById('error-message').textContent = msg;
+    }
+    function hideError() {
+      document.getElementById('error-message').textContent = '';
+    }
+
+    // Use latest close from candles as live price
+    async function fetchLivePrice() {
+      const { candles } = await fetchCandles(currentInterval);
+      if (candles && candles.length > 0) {
+        return candles[candles.length - 1].close;
+      }
+      return null;
+    }
+
+    function showLoading(show) {
+      document.getElementById('loading-spinner').style.display = show ? '' : 'none';
+    }
+
+    function disableTimeframe(interval, disable) {
+      const btn = document.querySelector(`.tf-btn[data-tf="${interval}"]`);
+      if (btn) {
+        btn.disabled = disable;
+        btn.style.opacity = disable ? 0.5 : 1;
+        btn.style.cursor = disable ? 'not-allowed' : 'pointer';
+      }
+    }
+
+    async function renderChart() {
+      chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: Math.min(window.innerWidth * 0.95, 900),
+        height: 600,
+        layout: {
+          background: { color: '#181a20' },
+          textColor: '#d1d4dc',
+        },
+        grid: {
+          vertLines: { color: '#363c4e', style: 1, visible: true },
+          horzLines: { color: '#363c4e', style: 1, visible: true },
+        },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          barSpacing: 12,
+          borderColor: '#2a2e39',
+          tickMarkColor: '#6a798d',
+        },
+        rightPriceScale: {
+          borderColor: '#2a2e39',
+          scaleMargins: { top: 0.05, bottom: 0.15 },
+        },
+        crosshair: {
+          mode: LightweightCharts.CrosshairMode.Magnet,
+          vertLine: {
+            color: '#ffd700',
+            width: 1,
+            style: 2,
+            labelBackgroundColor: '#ffd700',
+          },
+          horzLine: {
+            color: '#ffd700',
+            width: 1,
+            style: 2,
+            labelBackgroundColor: '#ffd700',
+          },
+        },
+        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      });
+      candleSeries = chart.addCandlestickSeries({
+        upColor: '#00ff99',
+        downColor: '#ff3860',
+        borderUpColor: '#00ff99',
+        borderDownColor: '#ff3860',
+        wickUpColor: '#00ff99',
+        wickDownColor: '#ff3860',
+        priceLineVisible: true,
+        lastValueVisible: true,
+        barSpacing: 12,
+        borderVisible: true,
+      });
+      // VWAP line series
+      vwapSeries = chart.addLineSeries({
+        color: '#f0b90b',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        title: 'VWAP'
+      });
+      volumeSeries = chart.addHistogramSeries({
+        color: '#3b4252',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.8, bottom: 0 },
+        lastValueVisible: true,
+        priceLineVisible: false,
+      });
+      await updateCandles();
+      setInterval(updateCandles, 60000); // Refresh every 60 seconds
+      // Add a live price line that updates every 2 seconds and show a floating label
+      let lastLivePrice = null;
+      let livePriceLabel = null;
+      let livePriceMarker = null;
+      let livePriceAnimFrame = null;
+      let livePriceColor = '#ffd700';
+      let livePricePrev = null;
+      // Animate price marker to new price
+      function animatePriceMarker(targetPrice) {
+        if (!livePriceMarker) {
+          livePriceMarker = { price: targetPrice };
+        }
+        let start = livePriceMarker.price;
+        let end = targetPrice;
+        let startTime = null;
+        let duration = 400;
+        function animate(ts) {
+          if (!startTime) startTime = ts;
+          let progress = Math.min((ts - startTime) / duration, 1);
+          let newPrice = start + (end - start) * progress;
+          livePriceMarker.price = newPrice;
+          if (livePriceLine) candleSeries.removePriceLine(livePriceLine);
+          livePriceLine = candleSeries.createPriceLine({
+            price: newPrice,
+            color: livePriceColor,
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Solid,
+            axisLabelVisible: true,
+            title: 'Live Price',
+          });
+          if (progress < 1) {
+            livePriceAnimFrame = requestAnimationFrame(animate);
+          }
+        }
+        if (livePriceAnimFrame) cancelAnimationFrame(livePriceAnimFrame);
+        livePriceAnimFrame = requestAnimationFrame(animate);
+      }
+
+      async function updateLivePriceLine() {
+        const price = await fetchLivePrice();
+        if (price && candleSeries) {
+          if (livePricePrev !== null) {
+            if (price > livePricePrev) livePriceColor = '#00ff99';
+            else if (price < livePricePrev) livePriceColor = '#ff3860';
+            else livePriceColor = '#ffd700';
+          }
+          livePricePrev = price;
+          lastLivePrice = price;
+          animatePriceMarker(price);
+          // Floating label
+          if (!livePriceLabel) {
+            livePriceLabel = document.createElement('div');
+            livePriceLabel.style = 'position: absolute; right: 40px; top: 80px; background: #ffd700; color: #181a20; font-weight: bold; padding: 8px 18px; border-radius: 8px; font-size: 1.3em; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 30; transition: background 0.2s, color 0.2s;';
+            document.body.appendChild(livePriceLabel);
+          }
+          livePriceLabel.textContent = `Live: $${price}`;
+          livePriceLabel.style.background = livePriceColor;
+          livePriceLabel.style.color = (livePriceColor === '#ffd700') ? '#181a20' : '#fff';
+          // Animate label for price change
+          livePriceLabel.style.transform = 'scale(1.08)';
+          setTimeout(() => { livePriceLabel.style.transform = 'scale(1)'; }, 200);
+        } else if (livePriceLabel) {
+          livePriceLabel.textContent = 'Live: --';
+          livePriceLabel.style.background = '#ff3860';
+          livePriceLabel.style.color = '#fff';
+        }
+      }
+      setInterval(updateLivePriceLine, 2000);
+      updateLivePriceLine();
+      chart.timeScale().fitContent();
+      addFullscreenButton();
+      addTooltip();
+      document.querySelectorAll('.tf-btn').forEach(btn => {
+        btn.onclick = async () => {
+          if (btn.disabled) return;
+          currentInterval = btn.getAttribute('data-tf');
+          showLoading(true);
+          await updateCandles(true);
+          showLoading(false);
+        };
+      });
+    }
+    async function updateCandles(forceFit = false) {
+      showLoading(true);
+      const { candles, volumes } = await fetchCandles();
+      if (candles.length > 0) {
+        candleSeries.setData(candles);
+        volumeSeries.setData(volumes);
+        // VWAP calculation and set
+        const vwapData = calculateVWAP(candles);
+        vwapSeries.setData(vwapData);
+        // VWAP context
+        const lastCandle = candles[candles.length - 1];
+        const lastVWAP = vwapData[vwapData.length - 1].value;
+        let vwapContext = 'AT VWAP';
+        if (lastCandle.close > lastVWAP) vwapContext = 'ABOVE VWAP';
+        if (lastCandle.close < lastVWAP) vwapContext = 'BELOW VWAP';
+        console.log('VWAP Context:', vwapContext);
+        // Remove any old static price line (if present)
+        if (livePriceLine) {
+          candleSeries.removePriceLine(livePriceLine);
+          livePriceLine = null;
+        }
+        // Market Phase detection
+        const marketPhase = detectMarketPhase(candles, lastVWAP);
+        console.log("Market Phase:", marketPhase);
+        const phaseEl = document.getElementById("phase");
+        if (phaseEl) {
+          phaseEl.innerText = marketPhase;
+        }
+        // Iceberg detection
+        const icebergState = detectIceberg(candles);
+        console.log("Iceberg Activity:", icebergState);
+        const icebergEl = document.getElementById("iceberg");
+        if (icebergEl) {
+          icebergEl.innerText = icebergState;
+        }
+        // Action Engine
+        const actionState = decideAction(
+          vwapContext,
+          marketPhase,
+          icebergState,
+          timePressure
+        );
+        console.log("ACTION:", actionState);
+        const actionEl = document.getElementById("action");
+        if (actionEl) {
+          actionEl.innerText = actionState;
+        }
+        // Time Pressure
+        const timePressure = detectTimePressure();
+        console.log("Time Pressure:", timePressure);
+        // Astro-Gann Bias
+        const astroBias = detectAstroGannBias();
+        console.log("Astro Bias:", astroBias);
+        const astroEl = document.getElementById("astroBias");
+        if (astroEl) {
+          astroEl.innerText = `Astro Bias: ${astroBias}`;
+        }
+        const timeEl = document.getElementById("timePressure");
+        if (timeEl) {
+          timeEl.innerText = timePressure;
+        }
+
+        // --- Confidence Score ---
+        // Use last candle and lastVWAP for proximity
+        const nearVWAP = Math.abs(candles[candles.length - 1].close - lastVWAP) < 10;
+        const confidenceScore = calculateConfidence({
+          nearVWAP,
+          marketPhase,
+          icebergState,
+          timePressure,
+          astroBias,
+          actionState
+        });
+        console.log("CONFIDENCE SCORE:", confidenceScore);
+        const confEl = document.getElementById("confidence");
+        if (confEl) {
+          confEl.innerText = `Confidence: ${confidenceScore}%`;
+        }
+                const day = now.getUTCDate();      // Day of month
+                const hour = now.getUTCHours();
+                const minute = now.getUTCMinutes();
+                let bias = "NEUTRAL";
+                // --- GANN DATE PRESSURE (harmonic days) ---
+                const gannDays = [7, 14, 21, 28];
+                if (gannDays.includes(day)) {
+                  bias = "PRESSURE";
+                }
+                // --- PLANETARY VOLATILITY WINDOWS (time-based) ---
+                // Approx Moon activity windows (no direction)
+                if (
+                  (hour === 1 || hour === 7 || hour === 13 || hour === 19) &&
+                  minute < 20
+                ) {
+                  bias = "PRESSURE";
+                }
+                // --- SUPPORTIVE ZONE (post-volatility digestion) ---
+                if (
+                  bias === "NEUTRAL" &&
+                  (minute > 25 && minute < 45)
+                ) {
+                  bias = "SUPPORT";
+                }
+                return bias;
+              }
+          timeEl.innerText = timePressure;
+        }
+        // Execute actions based on decision
+        // (Placeholder for future action implementation)
+        if (action === "EXECUTE") {
+          // Example: Place a market order (implementation not provided)
+          console.log("Placing market order...");
+        }
+        if (forceFit) chart.timeScale().fitContent();
+      }
+      showLoading(false);
+    }
+    // VWAP calculation function
+    function calculateVWAP(candles) {
+      let cumulativeTPV = 0;
+      let cumulativeVolume = 0;
+      return candles.map(c => {
+        const typicalPrice = (c.high + c.low + c.close) / 3;
+        const volume = c.volume ?? 1; // fallback if volume missing
+        cumulativeTPV += typicalPrice * volume;
+        cumulativeVolume += volume;
+        return {
+          time: c.time,
+          value: cumulativeTPV / cumulativeVolume
+        };
+      });
+    }
+    // Market Phase detection function
+    function detectMarketPhase(candles, vwapValue) {
+      const recent = candles.slice(-6); // last 6 candles
+      const ranges = recent.map(c => c.high - c.low);
+      const avgRange = ranges.reduce((a,b)=>a+b,0) / ranges.length;
+      const last = candles[candles.length - 1];
+      const prev = candles[candles.length - 2];
+      // Thresholds (XAUUSD-friendly, adjustable later)
+      if (avgRange < 6) {
+        // very tight candles
+        if (Math.abs(last.close - vwapValue) < 5) {
+          return "ICEBERG ACCUMULATION";
+        }
+        return "LIQUIDITY BUILD-UP";
+      }
+      if (avgRange > 18) {
+        if (Math.abs(last.close - prev.close) < avgRange * 0.3) {
+          return "DISTRIBUTION";
+        }
+        return "EXPANSION";
+      }
+      return "NEUTRAL";
+    }
+    // Iceberg detection function
+    function detectIceberg(candles) {
+      const recent = candles.slice(-6);
+      const ranges = recent.map(c => c.high - c.low);
+      const avgRange = ranges.reduce((a,b)=>a+b,0) / ranges.length;
+      let wickCount = 0;
+      recent.forEach(c => {
+        const body = Math.abs(c.close - c.open);
+        const wick = (c.high - c.low) - body;
+        if (wick > body) wickCount++;
+      });
+      // Iceberg conditions
+      if (avgRange < 7 && wickCount >= 3) {
+        return "ACTIVE";
+      }
+      return "INACTIVE";
+    }
+    // Action Engine function (time-linked)
+    function decideAction(vwapContext, marketPhase, icebergState, timePressure) {
+      // Default state
+      let action = "WAIT";
+      // Prepare only when time is active
+      if (
+        timePressure === "HIGH" &&
+        icebergState === "ACTIVE" &&
+        (marketPhase === "ICEBERG ACCUMULATION" ||
+         marketPhase === "LIQUIDITY BUILD-UP")
+      ) {
+        action = "PREPARE";
+      }
+      // Execute only at correct time + expansion
+      if (
+        timePressure === "HIGH" &&
+        icebergState === "ACTIVE" &&
+        marketPhase === "EXPANSION"
+      ) {
+        action = "EXECUTE";
+      }
+      return action;
+    }
+    // Time Pressure (Gann-style) function
+    function detectTimePressure() {
+      const now = new Date();
+      const utcHour = now.getUTCHours();
+      const utcMinute = now.getUTCMinutes();
+      let pressure = "LOW";
+      // Session-based pressure
+      if (
+        (utcHour === 7) ||
+        (utcHour === 13) ||
+        (utcHour >= 13 && utcHour <= 15)
+      ) {
+        pressure = "HIGH";
+      }
+      // Gann-style 90-minute cycles
+      const minutesFromMidnight = utcHour * 60 + utcMinute;
+      if (minutesFromMidnight % 90 < 5) {
+        pressure = "HIGH";
+      }
+      return pressure;
+    }
+    function addTooltip() {
+      const container = document.getElementById('chart');
+      const tooltip = document.createElement('div');
+      tooltip.style = 'position: absolute; display: none; background: #23262f; color: #ffd700; border: 1px solid #ffd700; padding: 8px; border-radius: 6px; font-size: 0.95em; pointer-events: none; z-index: 10;';
+      container.appendChild(tooltip);
+      chart.subscribeCrosshairMove(param => {
+        if (!param.point || !param.time || param.point.x < 0 || param.point.y < 0) {
+          tooltip.style.display = 'none';
+          return;
+        }
+        if (!param.seriesPrices || typeof param.seriesPrices.get !== 'function') {
+          tooltip.style.display = 'none';
+          return;
+        }
+        const c = param.seriesPrices.get(candleSeries);
+        if (!c || typeof c.open === 'undefined' || typeof c.high === 'undefined' || typeof c.low === 'undefined' || typeof c.close === 'undefined') {
+          tooltip.style.display = 'none';
+          return;
+        }
+        tooltip.innerHTML = `<b>${param.time}</b><br>O: ${c.open} H: ${c.high} L: ${c.low} C: ${c.close}`;
+        tooltip.style.left = (param.point.x + 20) + 'px';
+        tooltip.style.top = (param.point.y + 20) + 'px';
+        tooltip.style.display = 'block';
+      });
+    }
+    function addFullscreenButton() {
+      const btn = document.createElement('button');
+      btn.textContent = 'Fullscreen';
+      btn.style = 'position: absolute; top: 16px; right: 32px; z-index: 20; background: #ffd700; color: #222; border: none; border-radius: 6px; padding: 8px 16px; font-weight: bold; cursor: pointer;';
+      btn.onclick = () => {
+        const el = document.documentElement;
+        if (!document.fullscreenElement) el.requestFullscreen();
+        else document.exitFullscreen();
+      };
+      document.body.appendChild(btn);
+    }
+    renderChart();
+  </script>
+</body>
+</html>
