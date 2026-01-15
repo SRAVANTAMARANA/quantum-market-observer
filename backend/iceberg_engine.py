@@ -1,5 +1,6 @@
 
 def iceberg_engine(ctx, orderflow):
+    print("[DEBUG] Entering iceberg_engine", ctx, orderflow)
     if ctx["session"] not in ["LONDON", "NEW_YORK"]:
         return None, "Outside session"
 
@@ -32,7 +33,9 @@ def iceberg_engine(ctx, orderflow):
         "tp": ctx["price"] - 4.0 if iceberg_type == "SELL" else ctx["price"] + 4.0
     }
 
-    return {
+    result = {
         "iceberg": iceberg,
         "trade": trade
-    }, "Valid iceberg"
+    }
+    print("[DEBUG] Exiting iceberg_engine", result)
+    return result, "Valid iceberg"

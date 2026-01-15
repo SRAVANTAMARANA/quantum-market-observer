@@ -1,4 +1,5 @@
 def orderflow_adapter(gc_ctx):
+    print("[DEBUG] Entering orderflow_adapter", gc_ctx)
     delta = gc_ctx.get("delta", 0)
     high = gc_ctx.get("high", 0)
     low = gc_ctx.get("low", 0)
@@ -16,8 +17,10 @@ def orderflow_adapter(gc_ctx):
         absorption = True
         bias = "SELL_AGGRESSION_ABSORBED"
 
-    return {
+    result = {
         "of_delta": delta,
         "of_absorption": absorption,
         "of_bias": bias
     }
+    print("[DEBUG] Exiting orderflow_adapter", result)
+    return result

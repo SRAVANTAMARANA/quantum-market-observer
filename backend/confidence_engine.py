@@ -1,4 +1,5 @@
 def confidence_engine(ctx, iceberg, orderflow):
+    print("[DEBUG] Entering confidence_engine", ctx, iceberg, orderflow)
     score = 0
     reasons = []
 
@@ -30,8 +31,10 @@ def confidence_engine(ctx, iceberg, orderflow):
     else:
         grade = "C"
 
-    return {
+    result = {
         "score": score,
         "grade": grade,
         "reasons": reasons
     }
+    print("[DEBUG] Exiting confidence_engine", result)
+    return result
