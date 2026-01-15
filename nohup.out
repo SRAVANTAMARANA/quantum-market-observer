@@ -1,0 +1,14 @@
+ * Serving Flask app 'app'
+ * Debug mode: on
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 111-777-205
+127.0.0.1 - - [15/Jan/2026 07:49:12] "GET /index.html?id=bb4fd291-11c9-4133-b938-a12ab7d2afb2&vscodeBrowserReqId=1768463351905 HTTP/1.1" 200 -
+127.0.0.1 - - [15/Jan/2026 07:49:29] "GET /index.html HTTP/1.1" 200 -
+127.0.0.1 - - [15/Jan/2026 07:49:29] code 404, message File not found
+127.0.0.1 - - [15/Jan/2026 07:49:29] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [15/Jan/2026 07:50:13] code 404, message File not found
+127.0.0.1 - - [15/Jan/2026 07:50:13] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -

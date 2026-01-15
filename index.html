@@ -56,13 +56,6 @@
       background: linear-gradient(120deg, #181a20 80%, #23262f 100%);
       position: relative;
     }
-    #phase, #iceberg, #timePressure {
-      color: #ffd700;
-      font-weight: bold;
-      font-size: 1.1em;
-      margin: 16px 0;
-      text-align: center;
-    }
   </style>
 </head>
 <body>
@@ -74,125 +67,353 @@
     <button class="tf-btn" data-tf="1h">1h</button>
     <button class="tf-btn" data-tf="4h">4h</button>
     <button class="tf-btn" data-tf="1day">1D</button>
-    <span style="margin-left: 24px;">[More tools coming soon]</span>
+    <button id="vwap-toggle" style="margin-left:24px;background:#ffd700;color:#181a20;border-radius:6px;padding:6px 16px;font-weight:bold;cursor:pointer;">Hide VWAP</button>
+    <button id="aiMentorToggle" style="margin-left:24px;background:#23262f;color:#ffd700;border-radius:6px;padding:6px 16px;font-weight:bold;cursor:pointer;">🧠 AI Mentor</button>
+    <span style="margin-left: 12px;">[More tools coming soon]</span>
+  </div>
+  <div id="panel" style="background:#222;color:#ffd700;padding:18px 32px;font-size:1.2em;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 8px rgba(0,0,0,0.07);margin:0 auto 18px auto;max-width:900px;border-radius:10px;">
+    <div>
+      <span class="panel-title" style="font-weight:bold;">QMO Panel</span>
+      <span class="panel-symbol" style="font-size:1.1em;margin-left:18px;">XAUUSD</span>
+    </div>
+    <div style="display:flex;gap:24px;align-items:center;">
+      <span id="panel-phase">Phase: <b>--</b></span>
+      <span id="panel-iceberg">Iceberg: <b>--</b></span>
+      <span id="panel-time">Time: <b>--</b></span>
+      <span id="panel-astro">Astro: <b>--</b></span>
+      <span id="panel-action">Action: <b>--</b></span>
+      <span id="panel-confidence">Confidence: <b>--</b></span>
+    </div>
+  </div>
+  <div id="aiMentorPanel" class="hidden" style="background:#23262f;color:#ffd700;padding:16px 24px;border-radius:8px;max-width:900px;margin:0 auto 18px auto;box-shadow:0 2px 8px rgba(0,0,0,0.07);">
+    <b>AI Mentor</b>
+    <pre id="aiOutput" style="color:#ffd700;background:#181a20;padding:8px 12px;border-radius:6px;overflow-x:auto;"></pre>
   </div>
   <div id="chart"></div>
+    <!-- Iceberg absorption floating label -->
+    <div id="icebergLabel"
+         style="position:absolute;background:rgba(0,120,255,0.15);color:#9bd3ff;padding:6px 10px;font-size:12px;border-radius:4px;display:none;pointer-events:none;z-index:20;left:20px;top:120px;">
+      ICEBERG ABSORPTION<br>Orders Being Filled
+    </div>
+  <!-- All JS logic is now in the script block below -->
   <div id="loading-spinner" style="display:none;text-align:center;margin-top:24px;">
     <span style="color:#ffd700;font-size:1.2em;">Loading...</span>
   </div>
   <div id="error-message" style="color: red; text-align: center; margin-top: 16px;"></div>
-  <div id="phase"></div>
-  <div id="iceberg"></div>
-  <div id="action"></div>
-  <div id="timePressure"></div>
-  <div id="astroBias"></div>
-  <div id="confidence"></div>
-      // Confidence Scoring Engine (v1)
-      function calculateConfidence({
-        nearVWAP,
-        marketPhase,
-        icebergState,
-        timePressure,
-        astroBias,
-        actionState
-      }) {
-        let score = 0;
-        if (nearVWAP) score += 10;
-        if (marketPhase === "EXPANSION") score += 25;
-        if (icebergState === "ACTIVE") score += 25;
-        if (timePressure === "HIGH") score += 20;
-        if (astroBias === "PRESSURE") score += 10;
-        if (actionState === "EXECUTE") score += 10;
-        return Math.min(score, 100);
-      }
+  <div id="api-debug" style="color: #ffd700; background: #23262f; padding: 8px 12px; border-radius: 6px; max-width: 900px; margin: 12px auto; font-size: 0.95em; display: none; white-space: pre-wrap; overflow-x: auto;"></div>
+  <!-- Debug output removed -->
   <script>
+        // === GLOBALS ===
+                // === Fetch Candles Function (from candles.html, adapted) ===
+                async function fetchCandles(interval = currentInterval, debug = false) {
+                  // Use the correct API key for the selected interval
+                  try {
+                    const url = `/candles?interval=${interval}`;
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    if (!data.candles) {
+                      showError("Failed to load data: " + (data.message || "Unknown error"));
+                      return { candles: [], volumes: [], rawData: data };
+                    }
+                    hideError();
+                    // Data is already in correct format
+                    return { candles: data.candles, volumes: data.volumes, rawData: debug ? data : null };
+                  } catch (e) {
+                    showError("Network/API error: " + e.message);
+                    return { candles: [], volumes: [], rawData: null };
+                  }
+                }
+
+                // === Error Message Helpers ===
+                function showError(msg) {
+                  document.getElementById('error-message').textContent = msg;
+                }
+                function hideError() {
+                  document.getElementById('error-message').textContent = '';
+                }
+        let icebergZoneAreaSeries = null;
+
+        // === AI Mentor Button Logic ===
+                // --- Show/Hide Loading Spinner ---
+                function showLoading(show) {
+                  document.getElementById('loading-spinner').style.display = show ? 'block' : 'none';
+                }
+        const aiMentorPanel = document.getElementById("aiMentorPanel");
+        document.getElementById("aiMentorToggle").onclick = () =>
+          aiMentorPanel.classList.toggle("hidden");
+
+        function updateAIMentorPanel(data) {
+          document.getElementById("aiOutput").innerText =
+            typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        }
+        // Example: updateAIMentorPanel({msg: "Welcome to the AI Mentor!"});
+    // === ICEBERG DETECTION BASELINE ===
+    let icebergState = "INACTIVE";
+    // Remove duplicate declaration of icebergZone (already declared elsewhere)
+    let icebergZoneTop = null;
+    let icebergZoneBottom = null;
+    let currentTimeframe = "15min"; // or "5m" as needed
+
+    function getIcebergThreshold(tf) {
+      if (tf === "5m") return 8;
+      if (tf === "15m") return 20;
+      return 10;
+    }
+
+    function detectIceberg() {
+      if (!window._lastCandlesForVWAP || window._lastCandlesForVWAP.length < 6) {
+        icebergState = "INACTIVE";
+        return;
+      }
+      const candleData = window._lastCandlesForVWAP;
+      const recent = candleData.slice(-6);
+      const threshold = getIcebergThreshold(currentTimeframe);
+      let ranges = [];
+      let wickCount = 0;
+      recent.forEach(c => {
+        const range = c.high - c.low;
+        ranges.push(range);
+        const body = Math.abs(c.close - c.open);
+        const wick = range - body;
+        if (wick > body) wickCount++;
+      });
+      const avgRange = ranges.reduce((a,b)=>a+b,0) / ranges.length;
+      // Debug log
+      console.log("Iceberg check → avgRange:", avgRange.toFixed(2), "wickCount:", wickCount, "threshold:", threshold);
+      if (avgRange < threshold && wickCount >= 3) {
+        icebergState = "ACTIVE";
+      } else {
+        icebergState = "INACTIVE";
+      }
+    }
+
+    function updateIcebergZone() {
+      // CREATE ZONE (ONCE)
+      if (icebergState === "ACTIVE" && !icebergZone) {
+        const candleData = window._lastCandlesForVWAP;
+        const recent = candleData.slice(-6);
+        const high = Math.max(...recent.map(c => c.high));
+        const low  = Math.min(...recent.map(c => c.low));
+        icebergZone = { high, low };
+        icebergZoneTop = chart.addAreaSeries({
+          topColor: "rgba(0,120,255,0.35)",
+          bottomColor: "rgba(0,0,0,0)",
+          lineColor: "rgba(0,0,0,0)",
+          lineWidth: 0
+        });
+        icebergZoneBottom = chart.addAreaSeries({
+          topColor: "rgba(0,0,0,0)",
+          bottomColor: "rgba(0,120,255,0.15)",
+          lineColor: "rgba(0,0,0,0)",
+          lineWidth: 0
+        });
+        const startTime = recent[0].time;
+        const endTime = candleData[candleData.length - 1].time;
+        icebergZoneTop.setData([
+          { time: startTime, value: high },
+          { time: endTime, value: high }
+        ]);
+        icebergZoneBottom.setData([
+          { time: startTime, value: low },
+          { time: endTime, value: low }
+        ]);
+        console.log("🧊 ICEBERG ZONE CREATED", icebergZone);
+      }
+      // EXTEND ZONE
+      if (icebergZone && icebergZoneTop && icebergZoneBottom) {
+        const candleData = window._lastCandlesForVWAP;
+        const t = candleData[candleData.length - 1].time;
+        icebergZoneTop.update({ time: t, value: icebergZone.high });
+        icebergZoneBottom.update({ time: t, value: icebergZone.low });
+        // === ICEBERG DETECTION & VISUALS (Unified) ===
+        let icebergZone = null;
+        let icebergZoneAreaSeries = null;
+
+        function getIcebergThreshold(tf) {
+          // Example: threshold logic by timeframe
+          if (tf === '1min') return 0.8;
+          if (tf === '5min') return 1.2;
+          if (tf === '15min') return 1.8;
+          if (tf === '1h') return 2.5;
+          if (tf === '4h') return 3.5;
+          if (tf === '1day') return 5.0;
+          return 1.0;
+        }
+
+        function detectIceberg(candles, tf) {
+          // Modular detection logic (from frontend/chart.js)
+          if (!candles || candles.length < 10) return null;
+          let wickCount = 0, avgRange = 0;
+          for (let i = candles.length - 10; i < candles.length; ++i) {
+            const c = candles[i];
+            avgRange += Math.abs(c.high - c.low);
+            if (Math.abs(c.open - c.close) < (c.high - c.low) * 0.2) wickCount++;
+          }
+          avgRange /= 10;
+          const threshold = getIcebergThreshold(tf);
+          if (wickCount >= 6 && avgRange > threshold) {
+            return {
+              high: Math.max(...candles.slice(-10).map(c => c.high)),
+              low: Math.min(...candles.slice(-10).map(c => c.low)),
+              side: candles[candles.length-1].close > candles[candles.length-1].open ? 'BUY' : 'SELL'
+            };
+          }
+          return null;
+        }
+function drawIcebergZone(chart, zone) {
+  if (!zone) return;
+  chart.addPriceLine({
+    price: (zone.low + zone.high) / 2,
+    color: zone.side === 'BUY' ? 'rgba(0,255,150,.4)' : 'rgba(255,80,80,.4)',
+    title: `${zone.side} ICEBERG`
+  });
+}
+
+function showIcebergZoneArea(chart, candles, zone) {
+  if (!zone) {
+    if (icebergZoneAreaSeries) icebergZoneAreaSeries.setData([]);
+    return;
+  }
+  if (!icebergZoneAreaSeries) {
+    icebergZoneAreaSeries = chart.addAreaSeries({
+      topColor: zone.side === 'BUY' ? 'rgba(0,255,150,0.12)' : 'rgba(255,80,80,0.12)',
+      bottomColor: 'rgba(0,0,0,0)',
+      lineColor: zone.side === 'BUY' ? 'rgba(0,255,150,0.4)' : 'rgba(255,80,80,0.4)',
+      lineWidth: 2,
+    });
+  }
+  const areaData = candles.map(c => ({ time: c.time, value: zone.side === 'BUY' ? zone.low : zone.high }));
+  icebergZoneAreaSeries.setData(areaData);
+}
+
+        // Call this after loading candles:
+        // const zone = detectIceberg(candles, currentTimeframe);
+        // drawIcebergZone(chart, zone);
+        // showIcebergZoneArea(chart, candles, zone);
+      // 1. Compression: avg range in window < threshold * median range
+      let ranges = [];
+      for (let i = candles.length - window; i < candles.length; i++) {
+        ranges.push(candles[i].high - candles[i].low);
+      }
+      const medianRange = ranges.slice().sort((a,b)=>a-b)[Math.floor(ranges.length/2)];
+      const avgRange = ranges.reduce((a,b)=>a+b,0)/ranges.length;
+      if (!(avgRange < compressionThreshold * medianRange)) return null;
+      // 2. Wick dominance: wick > body, count >= minWickCount
+      let wickCount = 0;
+      let wickIndexes = [];
+      let wickBodyRatios = [];
+      for (let i = candles.length - window; i < candles.length; i++) {
+        const c = candles[i];
+        const body = Math.abs(c.close - c.open);
+        const wick = (c.high - Math.max(c.close, c.open)) + (Math.min(c.close, c.open) - c.low);
+        wickBodyRatios.push({
+          index: i,
+          wick,
+          body,
+          ratio: body ? (wick / body).toFixed(2) : 'inf',
+          wickDominant: wick > body
+        });
+        if (wick > body) {
+          wickCount++;
+          wickIndexes.push(i);
+        }
+      }
+      console.log('Wick/Body ratios for last 10 candles:', wickBodyRatios);
+      if (wickCount < minWickCount) return null;
+      // Persistence check removed for easier detection
+      // Zone boundaries: from first to last wick in window
+      const from = wickIndexes[0];
+      const to = wickIndexes[wickIndexes.length-1]+1;
+      const zoneCandles = candles.slice(from, to);
+      const high = Math.max(...zoneCandles.map(c => c.high));
+      const low = Math.min(...zoneCandles.map(c => c.low));
+      // Direction: more bullish but not rising = buy absorption; more bearish but not falling = sell absorption
+      let bullish = 0, bearish = 0;
+      for (const c of zoneCandles) {
+        if (c.close > c.open) bullish++;
+        else if (c.close < c.open) bearish++;
+      }
+      let side = 'neutral';
+      if (bullish > bearish) side = 'buy';
+      else if (bearish > bullish) side = 'sell';
+      return { from, to, high, low, side };
+    }
+
+    function updateIcebergZoneOnChart(candles) {
+      icebergZone = detectIcebergZone(candles);
+      const label = document.getElementById('icebergLabel');
+      if (icebergZone) {
+        showIcebergZoneArea(candles, icebergZone);
+        // Show main floating label
+        label.style.display = 'block';
+        label.innerHTML =
+          (icebergZone.side === 'buy' ? 'BUY ABSORPTION' : icebergZone.side === 'sell' ? 'SELL ABSORPTION' : 'ICEBERG ABSORPTION') +
+          '<br>Orders Being Filled';
+        label.style.background = icebergZone.side === 'buy' ? 'rgba(0,120,255,0.15)' : icebergZone.side === 'sell' ? 'rgba(255,60,60,0.15)' : 'rgba(0,120,255,0.15)';
+        label.style.color = icebergZone.side === 'buy' ? '#9bd3ff' : icebergZone.side === 'sell' ? '#ffbdbd' : '#9bd3ff';
+        // Mood shift
+        chart.applyOptions({
+          layout: {
+            background: { color: icebergZone.side === 'buy' ? '#0c1520' : icebergZone.side === 'sell' ? '#201010' : '#0f1115' }
+          }
+        });
+        // Show iceberg text labels for each wick-dominant candle in zone
+        showIcebergTextLabels(candles, icebergZone);
+      } else {
+        showIcebergZoneArea(null, null);
+        label.style.display = 'none';
+        chart.applyOptions({ layout: { background: { color: '#0f1115' } } });
+        // Remove iceberg text labels
+        document.querySelectorAll('.iceberg-text-label').forEach(e => e.remove());
+      }
+    }
+    let icebergZoneAreaSeries = null;
     let chart, candleSeries, volumeSeries, livePriceLine;
-    let currentInterval = '15min';
-    // Use two API keys for different timeframes to reduce errors
-    // Add a dedicated key for 15min interval
-    const TWELVE_DATA_KEYS = {
-      '1min': '6b0bc20e0aa6416abd7991e0f2883c54',
-      '5min': '6b0bc20e0aa6416abd7991e0f2883c54',
-      '15min': '84636b315e21459ab51acc322b468eb8',
-      '1h': 'cd9e7c71a1614c6dab24fbe1ba41c8fb',
-      '4h': 'cd9e7c71a1614c6dab24fbe1ba41c8fb',
-      '1day': 'cd9e7c71a1614c6dab24fbe1ba41c8fb'
-    };
-    function getApiKeyForInterval(interval) {
-      return TWELVE_DATA_KEYS[interval] || TWELVE_DATA_KEYS['1min'];
-    }
-    async function fetchCandles(interval = currentInterval) {
-      const apiKey = getApiKeyForInterval(interval);
-      const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&apikey=${apiKey}&outputsize=100&format=JSON`;
-      try {
-        const response = await fetch(url);
-        const data = await response.json();
-        if (data.code === 429) {
-          showError("API key for this timeframe is exhausted. Please try another timeframe or use a new key.");
-          disableTimeframe(interval, true);
-          return { candles: [], volumes: [] };
-        }
-        if (!data.values) {
-          showError("Failed to load data: " + (data.message || "Unknown error"));
-          return { candles: [], volumes: [] };
-        }
-        hideError();
-        disableTimeframe(interval, false);
-        const candles = [];
-        const volumes = [];
-        const values = data.values.reverse();
-        for (let i = 0; i < values.length; i++) {
-          const item = values[i];
-          const time = Math.floor(new Date(item.datetime.replace(' ', 'T')).getTime() / 1000);
-          candles.push({
-            time,
-            open: +item.open,
-            high: +item.high,
-            low: +item.low,
-            close: +item.close
-          });
-          volumes.push({
-            time,
-            value: +item.volume || 0,
-            color: (+item.close > +item.open) ? '#00ff99' : '#ff3860'
-          });
-        }
-        return { candles, volumes };
-      } catch (e) {
-        showError("Network/API error: " + e.message);
-        return { candles: [], volumes: [] };
-      }
-    }
-    function showError(msg) {
-      document.getElementById('error-message').textContent = msg;
-    }
-    function hideError() {
-      document.getElementById('error-message').textContent = '';
-    }
-
-    // Use latest close from candles as live price
+    // === Chart Initialization ===
+    // --- Live Price Fetcher ---
     async function fetchLivePrice() {
-      const { candles } = await fetchCandles(currentInterval);
-      if (candles && candles.length > 0) {
-        return candles[candles.length - 1].close;
-      }
-      return null;
-    }
-
-    function showLoading(show) {
-      document.getElementById('loading-spinner').style.display = show ? '' : 'none';
-    }
-
-    function disableTimeframe(interval, disable) {
-      const btn = document.querySelector(`.tf-btn[data-tf="${interval}"]`);
-      if (btn) {
-        btn.disabled = disable;
-        btn.style.opacity = disable ? 0.5 : 1;
-        btn.style.cursor = disable ? 'not-allowed' : 'pointer';
+      try {
+        const resp = await fetch('/market?symbol=XAUUSD');
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        return data && data.price ? data.price : null;
+      } catch (e) {
+        return null;
       }
     }
 
-    async function renderChart() {
+    // --- Live Price Line Logic ---
+    async function updateLivePriceLine() {
+      const price = await fetchLivePrice();
+      if (price && candleSeries) {
+        if (livePricePrev !== null) {
+          if (price > livePricePrev) livePriceColor = '#00ff99';
+          else if (price < livePricePrev) livePriceColor = '#ff3860';
+          else livePriceColor = '#ffd700';
+        }
+        livePricePrev = price;
+        lastLivePrice = price;
+        animatePriceMarker(price);
+        // Floating label
+        if (!livePriceLabel) {
+          livePriceLabel = document.createElement('div');
+          livePriceLabel.style = 'position: absolute; right: 40px; top: 80px; background: #ffd700; color: #181a20; font-weight: bold; padding: 8px 18px; border-radius: 8px; font-size: 1.3em; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 30; transition: background 0.2s, color 0.2s;';
+          document.body.appendChild(livePriceLabel);
+        }
+        livePriceLabel.textContent = `Live: $${price}`;
+        livePriceLabel.style.background = livePriceColor;
+        livePriceLabel.style.color = (livePriceColor === '#ffd700') ? '#181a20' : '#fff';
+        // Animate label for price change
+        livePriceLabel.style.transform = 'scale(1.08)';
+        setTimeout(() => { livePriceLabel.style.transform = 'scale(1)'; }, 200);
+      } else if (livePriceLabel) {
+        livePriceLabel.textContent = 'Live: --';
+        livePriceLabel.style.background = '#ff3860';
+        livePriceLabel.style.color = '#fff';
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
       chart = LightweightCharts.createChart(document.getElementById('chart'), {
         width: Math.min(window.innerWidth * 0.95, 900),
         height: 600,
@@ -215,63 +436,56 @@
           borderColor: '#2a2e39',
           scaleMargins: { top: 0.05, bottom: 0.15 },
         },
-        crosshair: {
-          mode: LightweightCharts.CrosshairMode.Magnet,
-          vertLine: {
-            color: '#ffd700',
-            width: 1,
-            style: 2,
-            labelBackgroundColor: '#ffd700',
-          },
-          horzLine: {
-            color: '#ffd700',
-            width: 1,
-            style: 2,
-            labelBackgroundColor: '#ffd700',
-          },
-        },
-        handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
       });
-      candleSeries = chart.addCandlestickSeries({
-        upColor: '#00ff99',
-        downColor: '#ff3860',
-        borderUpColor: '#00ff99',
-        borderDownColor: '#ff3860',
-        wickUpColor: '#00ff99',
-        wickDownColor: '#ff3860',
-        priceLineVisible: true,
-        lastValueVisible: true,
-        barSpacing: 12,
-        borderVisible: true,
-      });
-      // VWAP line series
-      vwapSeries = chart.addLineSeries({
-        color: '#f0b90b',
-        lineWidth: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        title: 'VWAP'
-      });
+      candleSeries = chart.addCandlestickSeries();
       volumeSeries = chart.addHistogramSeries({
-        color: '#3b4252',
+        color: '#3a3a40',
         priceFormat: { type: 'volume' },
         priceScaleId: '',
         scaleMargins: { top: 0.8, bottom: 0 },
-        lastValueVisible: true,
-        priceLineVisible: false,
       });
-      await updateCandles();
-      setInterval(updateCandles, 60000); // Refresh every 60 seconds
-      // Add a live price line that updates every 2 seconds and show a floating label
-      let lastLivePrice = null;
-      let livePriceLabel = null;
-      let livePriceMarker = null;
-      let livePriceAnimFrame = null;
-      let livePriceColor = '#ffd700';
-      let livePricePrev = null;
-      // Animate price marker to new price
-      function animatePriceMarker(targetPrice) {
+
+      // --- VWAP Calculation and Overlay ---
+      // ...existing code for VWAP, updateCandles, etc. remains...
+
+      setInterval(updateLivePriceLine, 2000);
+      updateLivePriceLine();
+      chart.timeScale().fitContent();
+      addFullscreenButton();
+      addTooltip();
+
+      // FIX: Load candles on page load
+      updateCandles(true);
+    });
+        // === Live Price Fetcher ===
+        async function fetchLivePrice() {
+          // Example: fetch from backend or API
+          try {
+            const resp = await fetch('/market?symbol=XAUUSD');
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            return data && data.price ? data.price : null;
+          } catch (e) {
+            return null;
+          }
+        }
+    let currentInterval = '15min';
+    // Use two API keys for different timeframes to reduce errors
+    // Add a dedicated key for 15min interval
+    // === ICEBERG DETECTION & VISUALS (Unified) ===
+
+    let currentTimeframe = "15min";
+
+    const TWELVE_DATA_KEYS = {
+      '1min': '6b0bc20e0aa6416abd7991e0f2883c54',
+      '5min': '6b0bc20e0aa6416abd7991e0f2883c54',
+      '15min': '84636b315e21459ab51acc322b468eb8',
+      '1h': 'cd9e7c71a1614c6dab24fbe1ba41c8fb',
+      '4h': 'cd9e7c71a1614c6dab24fbe1ba41c8fb',
+      '1day': 'cd9e7c71a1614c6dab24fbe1ba41c8fb'
+    };
+
+    // ...existing code...
         if (!livePriceMarker) {
           livePriceMarker = { price: targetPrice };
         }
@@ -330,11 +544,6 @@
           livePriceLabel.style.color = '#fff';
         }
       }
-      setInterval(updateLivePriceLine, 2000);
-      updateLivePriceLine();
-      chart.timeScale().fitContent();
-      addFullscreenButton();
-      addTooltip();
       document.querySelectorAll('.tf-btn').forEach(btn => {
         btn.onclick = async () => {
           if (btn.disabled) return;
@@ -344,221 +553,73 @@
           showLoading(false);
         };
       });
+    // --- VWAP Calculation and Overlay ---
+    let vwapSeries = null;
+    let vwapVisible = true;
+    function calculateVWAP(candles) {
+      let cumulativePV = 0;
+      let cumulativeVolume = 0;
+      const vwap = [];
+      for (let i = 0; i < candles.length; i++) {
+        // Use volume from volumeSeries if available, else estimate as 1
+        const price = (candles[i].high + candles[i].low + candles[i].close) / 3;
+        const volume = candles[i].volume !== undefined ? candles[i].volume : 1;
+        cumulativePV += price * volume;
+        cumulativeVolume += volume;
+        vwap.push({ time: candles[i].time, value: cumulativeVolume ? cumulativePV / cumulativeVolume : price });
+      }
+      return vwap;
     }
+
     async function updateCandles(forceFit = false) {
       showLoading(true);
-      const { candles, volumes } = await fetchCandles();
+      const { candles, volumes, rawData } = await fetchCandles(undefined, true);
+      // Show API debug panel
+      const apiDebug = document.getElementById('api-debug');
+      if (rawData) {
+        apiDebug.style.display = 'block';
+        apiDebug.textContent = '[API Response]\n' + JSON.stringify(rawData, null, 2);
+      } else {
+        apiDebug.style.display = 'none';
+      }
+      console.log('[QMO] Candles loaded:', candles.length, 'Volumes loaded:', volumes.length);
       if (candles.length > 0) {
+        // Attach volume to candles for VWAP
+        for (let i = 0; i < candles.length; i++) {
+          candles[i].volume = volumes[i] ? volumes[i].value : 1;
+        }
         candleSeries.setData(candles);
         volumeSeries.setData(volumes);
-        // VWAP calculation and set
+        // Store candles globally for VWAP toggle
+        window._lastCandlesForVWAP = candles;
+        // VWAP
         const vwapData = calculateVWAP(candles);
-        vwapSeries.setData(vwapData);
-        // VWAP context
-        const lastCandle = candles[candles.length - 1];
-        const lastVWAP = vwapData[vwapData.length - 1].value;
-        let vwapContext = 'AT VWAP';
-        if (lastCandle.close > lastVWAP) vwapContext = 'ABOVE VWAP';
-        if (lastCandle.close < lastVWAP) vwapContext = 'BELOW VWAP';
-        console.log('VWAP Context:', vwapContext);
+        if (!vwapSeries) {
+          vwapSeries = chart.addLineSeries({
+            color: '#ffd700',
+            lineWidth: 2,
+            title: 'VWAP',
+            priceLineVisible: false
+          });
+        }
+        if (vwapVisible) {
+          vwapSeries.setData(vwapData);
+        } else {
+          vwapSeries.setData([]);
+        }
+        // Modular ICEBERG DETECTION + ZONE
+        updateIcebergDetectionAndVisuals();
         // Remove any old static price line (if present)
         if (livePriceLine) {
           candleSeries.removePriceLine(livePriceLine);
           livePriceLine = null;
         }
-        // Market Phase detection
-        const marketPhase = detectMarketPhase(candles, lastVWAP);
-        console.log("Market Phase:", marketPhase);
-        const phaseEl = document.getElementById("phase");
-        if (phaseEl) {
-          phaseEl.innerText = marketPhase;
-        }
-        // Iceberg detection
-        const icebergState = detectIceberg(candles);
-        console.log("Iceberg Activity:", icebergState);
-        const icebergEl = document.getElementById("iceberg");
-        if (icebergEl) {
-          icebergEl.innerText = icebergState;
-        }
-        // Action Engine
-        const actionState = decideAction(
-          vwapContext,
-          marketPhase,
-          icebergState,
-          timePressure
-        );
-        console.log("ACTION:", actionState);
-        const actionEl = document.getElementById("action");
-        if (actionEl) {
-          actionEl.innerText = actionState;
-        }
-        // Time Pressure
-        const timePressure = detectTimePressure();
-        console.log("Time Pressure:", timePressure);
-        // Astro-Gann Bias
-        const astroBias = detectAstroGannBias();
-        console.log("Astro Bias:", astroBias);
-        const astroEl = document.getElementById("astroBias");
-        if (astroEl) {
-          astroEl.innerText = `Astro Bias: ${astroBias}`;
-        }
-        const timeEl = document.getElementById("timePressure");
-        if (timeEl) {
-          timeEl.innerText = timePressure;
-        }
-
-        // --- Confidence Score ---
-        // Use last candle and lastVWAP for proximity
-        const nearVWAP = Math.abs(candles[candles.length - 1].close - lastVWAP) < 10;
-        const confidenceScore = calculateConfidence({
-          nearVWAP,
-          marketPhase,
-          icebergState,
-          timePressure,
-          astroBias,
-          actionState
-        });
-        console.log("CONFIDENCE SCORE:", confidenceScore);
-        const confEl = document.getElementById("confidence");
-        if (confEl) {
-          confEl.innerText = `Confidence: ${confidenceScore}%`;
-        }
-                const day = now.getUTCDate();      // Day of month
-                const hour = now.getUTCHours();
-                const minute = now.getUTCMinutes();
-                let bias = "NEUTRAL";
-                // --- GANN DATE PRESSURE (harmonic days) ---
-                const gannDays = [7, 14, 21, 28];
-                if (gannDays.includes(day)) {
-                  bias = "PRESSURE";
-                }
-                // --- PLANETARY VOLATILITY WINDOWS (time-based) ---
-                // Approx Moon activity windows (no direction)
-                if (
-                  (hour === 1 || hour === 7 || hour === 13 || hour === 19) &&
-                  minute < 20
-                ) {
-                  bias = "PRESSURE";
-                }
-                // --- SUPPORTIVE ZONE (post-volatility digestion) ---
-                if (
-                  bias === "NEUTRAL" &&
-                  (minute > 25 && minute < 45)
-                ) {
-                  bias = "SUPPORT";
-                }
-                return bias;
-              }
-          timeEl.innerText = timePressure;
-        }
-        // Execute actions based on decision
-        // (Placeholder for future action implementation)
-        if (action === "EXECUTE") {
-          // Example: Place a market order (implementation not provided)
-          console.log("Placing market order...");
-        }
         if (forceFit) chart.timeScale().fitContent();
+        hideError();
+      } else {
+        showError('No candle data loaded. Check API/network or try again later.');
       }
       showLoading(false);
-    }
-    // VWAP calculation function
-    function calculateVWAP(candles) {
-      let cumulativeTPV = 0;
-      let cumulativeVolume = 0;
-      return candles.map(c => {
-        const typicalPrice = (c.high + c.low + c.close) / 3;
-        const volume = c.volume ?? 1; // fallback if volume missing
-        cumulativeTPV += typicalPrice * volume;
-        cumulativeVolume += volume;
-        return {
-          time: c.time,
-          value: cumulativeTPV / cumulativeVolume
-        };
-      });
-    }
-    // Market Phase detection function
-    function detectMarketPhase(candles, vwapValue) {
-      const recent = candles.slice(-6); // last 6 candles
-      const ranges = recent.map(c => c.high - c.low);
-      const avgRange = ranges.reduce((a,b)=>a+b,0) / ranges.length;
-      const last = candles[candles.length - 1];
-      const prev = candles[candles.length - 2];
-      // Thresholds (XAUUSD-friendly, adjustable later)
-      if (avgRange < 6) {
-        // very tight candles
-        if (Math.abs(last.close - vwapValue) < 5) {
-          return "ICEBERG ACCUMULATION";
-        }
-        return "LIQUIDITY BUILD-UP";
-      }
-      if (avgRange > 18) {
-        if (Math.abs(last.close - prev.close) < avgRange * 0.3) {
-          return "DISTRIBUTION";
-        }
-        return "EXPANSION";
-      }
-      return "NEUTRAL";
-    }
-    // Iceberg detection function
-    function detectIceberg(candles) {
-      const recent = candles.slice(-6);
-      const ranges = recent.map(c => c.high - c.low);
-      const avgRange = ranges.reduce((a,b)=>a+b,0) / ranges.length;
-      let wickCount = 0;
-      recent.forEach(c => {
-        const body = Math.abs(c.close - c.open);
-        const wick = (c.high - c.low) - body;
-        if (wick > body) wickCount++;
-      });
-      // Iceberg conditions
-      if (avgRange < 7 && wickCount >= 3) {
-        return "ACTIVE";
-      }
-      return "INACTIVE";
-    }
-    // Action Engine function (time-linked)
-    function decideAction(vwapContext, marketPhase, icebergState, timePressure) {
-      // Default state
-      let action = "WAIT";
-      // Prepare only when time is active
-      if (
-        timePressure === "HIGH" &&
-        icebergState === "ACTIVE" &&
-        (marketPhase === "ICEBERG ACCUMULATION" ||
-         marketPhase === "LIQUIDITY BUILD-UP")
-      ) {
-        action = "PREPARE";
-      }
-      // Execute only at correct time + expansion
-      if (
-        timePressure === "HIGH" &&
-        icebergState === "ACTIVE" &&
-        marketPhase === "EXPANSION"
-      ) {
-        action = "EXECUTE";
-      }
-      return action;
-    }
-    // Time Pressure (Gann-style) function
-    function detectTimePressure() {
-      const now = new Date();
-      const utcHour = now.getUTCHours();
-      const utcMinute = now.getUTCMinutes();
-      let pressure = "LOW";
-      // Session-based pressure
-      if (
-        (utcHour === 7) ||
-        (utcHour === 13) ||
-        (utcHour >= 13 && utcHour <= 15)
-      ) {
-        pressure = "HIGH";
-      }
-      // Gann-style 90-minute cycles
-      const minutesFromMidnight = utcHour * 60 + utcMinute;
-      if (minutesFromMidnight % 90 < 5) {
-        pressure = "HIGH";
-      }
-      return pressure;
     }
     function addTooltip() {
       const container = document.getElementById('chart');
@@ -596,7 +657,113 @@
       };
       document.body.appendChild(btn);
     }
-    renderChart();
+    // Confidence Scoring Engine (v1)
+    function calculateConfidence({ nearVWAP, marketPhase, icebergState, timePressure, astroBias, actionState }) {
+      let score = 0;
+      if (nearVWAP) score += 10;
+      if (marketPhase === "EXPANSION") score += 25;
+      if (icebergState === "ACTIVE") score += 25;
+      if (timePressure === "HIGH") score += 20;
+      if (astroBias === "PRESSURE") score += 10;
+      if (actionState === "EXECUTE") score += 10;
+      return Math.min(score, 100);
+    }
+
+    // --- MOCK SYSTEM STATE LOGIC FOR DEMO ---
+    // In a real system, these would be computed from your analysis layers
+    function getSystemState() {
+      // For demonstration, randomize states every 10 seconds
+      // Replace with real logic as needed
+      const phases = ["NEUTRAL", "LIQUIDITY BUILD-UP", "ICEBERG ACCUMULATION", "EXPANSION", "DISTRIBUTION", "EXHAUSTION"];
+      const icebergs = ["ACTIVE", "INACTIVE"];
+      const times = ["HIGH", "LOW"];
+      const astros = ["SUPPORT", "NEUTRAL", "PRESSURE"];
+      const actions = ["WAIT", "PREPARE", "EXECUTE"];
+      // Simple random for demo
+      return {
+        nearVWAP: Math.random() > 0.5,
+        marketPhase: phases[Math.floor(Math.random()*phases.length)],
+        icebergState: icebergs[Math.floor(Math.random()*icebergs.length)],
+        timePressure: times[Math.floor(Math.random()*times.length)],
+        astroBias: astros[Math.floor(Math.random()*astros.length)],
+        actionState: actions[Math.floor(Math.random()*actions.length)]
+      };
+    }
+
+    function updatePanel(state) {
+      document.getElementById('panel-phase').innerHTML = `Phase: <b>${state.marketPhase}</b>`;
+      document.getElementById('panel-iceberg').innerHTML = `Iceberg: <b>${state.icebergState}</b>`;
+      document.getElementById('panel-time').innerHTML = `Time: <b>${state.timePressure}</b>`;
+      document.getElementById('panel-astro').innerHTML = `Astro: <b>${state.astroBias}</b>`;
+      document.getElementById('panel-action').innerHTML = `Action: <b>${state.actionState}</b>`;
+      const conf = calculateConfidence(state);
+      document.getElementById('panel-confidence').innerHTML = `Confidence: <b>${conf}%</b>`;
+    }
+
+    // Demo: update panel every 10 seconds with new random state
+    setInterval(() => {
+      const state = getSystemState();
+      updatePanel(state);
+    }, 10000);
+    // Initial panel update
+    updatePanel(getSystemState());
+
+    // VWAP toggle button logic
+    document.getElementById('vwap-toggle').onclick = function() {
+      vwapVisible = !vwapVisible;
+      this.textContent = vwapVisible ? 'Hide VWAP' : 'Show VWAP';
+      if (vwapSeries) {
+        // Use the last candles used for VWAP
+        const candles = window._lastCandlesForVWAP || [];
+        if (vwapVisible) {
+          if (candles && candles.length) {
+            const vwapData = calculateVWAP(candles);
+            vwapSeries.setData(vwapData);
+          }
+        } else {
+          vwapSeries.setData([]);
+        }
+      }
+    };
+
+
+    // === Modular Iceberg Drawing Functions (must be defined before use) ===
+    function drawIcebergZone(chart, zone) {
+      if (!zone) return;
+      chart.addPriceLine({
+        price: (zone.low + zone.high) / 2,
+        color: zone.side === 'BUY' ? 'rgba(0,255,150,.4)' : 'rgba(255,80,80,.4)',
+        title: `${zone.side} ICEBERG`
+      });
+    }
+
+    function showIcebergZoneArea(chart, candles, zone) {
+      if (!zone) {
+        if (icebergZoneAreaSeries) icebergZoneAreaSeries.setData([]);
+        return;
+      }
+      if (!icebergZoneAreaSeries) {
+        icebergZoneAreaSeries = chart.addAreaSeries({
+          topColor: zone.side === 'BUY' ? 'rgba(0,255,150,0.12)' : 'rgba(255,80,80,0.12)',
+          bottomColor: 'rgba(0,0,0,0)',
+          lineColor: zone.side === 'BUY' ? 'rgba(0,255,150,0.4)' : 'rgba(255,80,80,0.4)',
+          lineWidth: 2,
+        });
+      }
+      const areaData = candles.map(c => ({ time: c.time, value: zone.side === 'BUY' ? zone.low : zone.high }));
+      icebergZoneAreaSeries.setData(areaData);
+    }
+
+    // === Modular Iceberg Detection Integration ===
+    function updateIcebergDetectionAndVisuals() {
+      const candles = window._lastCandlesForVWAP || [];
+      const zone = detectIceberg(candles, currentTimeframe);
+      drawIcebergZone(chart, zone);
+      showIcebergZoneArea(chart, candles, zone);
+    }
+
+    // Call after chart render and on data update
+    updateIcebergDetectionAndVisuals();
   </script>
 </body>
 </html>
